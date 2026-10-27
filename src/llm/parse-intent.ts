@@ -1,7 +1,7 @@
 import type { DateTime } from 'luxon';
 import type { Lesson } from '../domain/types.js';
 import { type Intent, IntentSchema } from '../nlu/intent.js';
-import { fmtShort, lessonStart, WEEKDAYS_FULL } from '../time.js';
+import { lessonStart, WEEKDAYS_FULL, WEEKDAYS_SHORT } from '../time.js';
 import { completeJson, extractJsonObject } from './client.js';
 
 export interface LessonRef {
@@ -34,9 +34,11 @@ export function buildRefs(lessons: Lesson[]): LessonRef[] {
 }
 
 export function buildSystemPrompt(ctx: IntentContext): string {
-  const lines = ctx.refs.map(
-    ({ ref, lesson }) => `${ref}: ${fmtShort(lessonStart(lesson, ctx.zone))} — ${STATUS_RU[lesson.status]}`,
-  );
+  // Даты в том же ISO-виде, что и «Сейчас»: с «пн 09.11» модель путала 9 и 11 ноября.
+  const lines = ctx.refs.map(({ ref, lesson }) => {
+    const start = lessonStart(lesson, ctx.zone);
+    return `${ref}: ${start.toFormat("yyyy-MM-dd'T'HH:mm")} (${WEEKDAYS_SHORT[start.weekday - 1]}) — ${STATUS_RU[lesson.status]}`;
+  });
   return [
     'Ты разбираешь сообщения в личном боте учёта занятий английским. Ответь ТОЛЬКО JSON-объектом одного из видов:',
     '{"type":"lesson_status","lesson_ref":"L3"|null,"status":"done"|"cancelled"|"burned"|"confirmed"}',

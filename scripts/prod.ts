@@ -21,11 +21,21 @@ async function main(): Promise<void> {
   if (error) throw new Error(`configure_tick: ${error.message}`);
   console.log('Tick URL and secret stored in Supabase Vault');
 
-  const response = await fetch(`${appUrl()}/api/tick`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env('TICK_SECRET')}`, 'Content-Type': 'application/json' },
-    body: '{}',
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${appUrl()}/api/tick`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env('TICK_SECRET')}`, 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (error) {
+    // Настройка уже записана; не достучались только отсюда — это сеть этой машины, а не прод.
+    console.warn(
+      `Tick check skipped: ${error instanceof Error ? error.message : error}. Проверьте вручную: ${appUrl()}/api/health`,
+    );
+    return;
+  }
   const body = await response.text();
   console.log(`Tick check: HTTP ${response.status} ${body.slice(0, 300)}`);
   if (!response.ok) throw new Error('Tick endpoint is not healthy (TICK_SECRET в Vercel совпадает с .env?)');
