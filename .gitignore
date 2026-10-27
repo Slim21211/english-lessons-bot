@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.vercel/
+coverage/
+supabase/.temp/
+supabase/.branches/
+*.log
+.DS_Store
