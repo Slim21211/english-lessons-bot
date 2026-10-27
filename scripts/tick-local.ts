@@ -1,7 +1,7 @@
 /**
  * Ручной запуск тика с локальной машины (переменные из .env):
- *   node --env-file=.env --import tsx scripts/tick-local.ts
- * Можно передать время для проверки сценариев: ... tick-local.ts 2026-11-02T17:55
+ *   npm run tick:local
+ * Можно передать время для проверки сценариев: npm run tick:local -- 2026-11-02T17:55
  */
 import { DateTime } from 'luxon';
 import { config } from '../src/config.js';

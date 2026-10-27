@@ -1,5 +1,5 @@
 -- Планировщик: pg_cron каждые 5 минут вызывает POST /api/tick на Vercel через pg_net.
--- Адрес и секрет хранятся в Supabase Vault, их записывает CI после деплоя (scripts/post-deploy.ts),
+-- Адрес и секрет хранятся в Supabase Vault, их записывает `npm run prod` (scripts/prod.ts),
 -- поэтому в репозитории нет ни URL, ни секретов.
 
 create extension if not exists pg_cron with schema pg_catalog;

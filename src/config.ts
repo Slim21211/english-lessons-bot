@@ -14,7 +14,7 @@ const schema = z.object({
   SUPABASE_URL: z.url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
 
-  /** Секрет для /api/tick (его же CI кладёт в Supabase Vault). */
+  /** Секрет для /api/tick (его же `npm run prod` кладёт в Supabase Vault). */
   TICK_SECRET: z.string().min(16),
 
   /** Часовой пояс. Переменная TZ на Vercel зарезервирована, поэтому отдельное имя. */
@@ -36,18 +36,10 @@ const schema = z.object({
   /** На сколько дней вперёд создавать занятия из расписания. */
   HORIZON_DAYS: z.coerce.number().int().min(7).max(90).default(28),
 
-  /** Порядок провайдеров LLM через запятую: groq, openrouter, custom. */
-  LLM_PROVIDERS: z.string().default('groq,openrouter'),
-  LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
+  /** Groq — разбор свободного текста. Без ключа работают только команды и простые фразы. */
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default('openai/gpt-oss-120b'),
-  OPENROUTER_API_KEY: z.string().optional(),
-  /** Можно несколько через запятую — OpenRouter сам перейдёт к следующей при ошибке. */
-  OPENROUTER_MODELS: z.string().default('openrouter/free'),
-  /** Любой OpenAI-совместимый endpoint (например, свой прокси или локальная модель). */
-  LLM_BASE_URL: z.string().optional(),
-  LLM_API_KEY: z.string().optional(),
-  LLM_MODEL: z.string().optional(),
+  LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
 });
 
 export type Config = z.infer<typeof schema>;

@@ -6,7 +6,7 @@
 - Считает остаток оплаченных: «было» и «сгорело» списывают, «отменилось» — нет, перенос создаёт новое занятие.
 - Напоминает об оплате, когда впереди осталось ≤ 1 оплаченного (раз в день, можно отложить до завтра).
 - Понимает обычный текст: «перенесли на пт в 18», «оплатил 4 занятия 8000», «с 28 декабря по 10 января каникулы».
-  Простые фразы разбираются правилами, остальное — бесплатной моделью (Groq / OpenRouter) с подтверждением.
+  Простые фразы разбираются правилами, остальное — бесплатной моделью Groq с подтверждением.
 - Любое действие можно откатить кнопкой «↩️ Отменить» или /undo.
 - По воскресеньям — итоги недели. Есть /history и /stats с тратами и средней ценой занятия.
 
@@ -17,59 +17,57 @@ Telegram ──webhook──▶ Vercel /api/telegram ──▶ grammY ──▶ 
                                                   │
 Supabase pg_cron (каждые 5 мин) ──pg_net──▶ /api/tick ──▶ планировщик ──▶ Telegram
                                                   │
-                                       Groq / OpenRouter (разбор текста)
+                                         Groq (разбор текста)
 ```
 
 - **Vercel Hobby** запускает свои cron-задачи не чаще раза в день, поэтому расписание живёт в **Supabase pg_cron**
-  и дёргает `/api/tick`. Адрес и секрет лежат в Supabase Vault — их записывает CI, в репозитории их нет.
+  и дёргает `/api/tick`. Адрес и секрет лежат в Supabase Vault — их записывает `npm run prod`, в репозитории их нет.
 - `/api/tick` идемпотентен: занятия из расписания создаются с уникальным `slot_key`, уведомления «занимают» ключ
   в таблице `notifications` перед отправкой — параллельные тики не дублируют сообщения.
 - Вся бизнес-логика (баланс, планировщик, разбор дат) — чистые функции в `src/domain` и `src/nlu`, покрыты тестами.
-- Деплой только из `main` через GitHub Actions; автодеплой Vercel из git выключен в `vercel.json`.
+- Деплой — штатная интеграция Vercel с git: пуш в `main` → прод, остальные ветки → preview.
 
 ## Настройка (один раз)
 
 ### 1. Бот и Telegram id
 1. Создайте бота у @BotFather, сохраните токен.
-2. Свой id узнаете после первого деплоя: напишите боту что угодно, он ответит «Это личный бот. Ваш Telegram id: …».
-   Впишите его в `OWNER_TELEGRAM_ID` и передеплойте (или заранее узнайте у @userinfobot).
+2. Свой id узнайте у @userinfobot или позже: бот отвечает чужим «Это личный бот. Ваш Telegram id: …».
 
 ### 2. Supabase
 1. Создайте проект (или используйте существующий — таблицы со своими именами в схеме `public`).
-2. Database → Extensions: миграция сама включает `pg_cron` и `pg_net`; если дашборд попросит — включите вручную.
-3. Сохраните: Project ref, пароль БД, `SUPABASE_URL`, `service_role` ключ, и создайте Access Token в аккаунте.
+2. Сохраните `SUPABASE_URL`, `service_role` ключ, Reference ID проекта и пароль БД.
+3. Примените миграции (включают `pg_cron` и `pg_net`, создают таблицы и расписание по умолчанию):
+   ```bash
+   npx supabase login      # один раз
+   npm run db:push
+   ```
 
-### 3. Модель (бесплатно)
-- **Groq** — основной: https://console.groq.com/keys. На бесплатном тарифе `openai/gpt-oss-120b` даёт около 1000 запросов
-  в день — для личного бота с запасом.
-- **OpenRouter** — запасной: https://openrouter.ai/keys. Бесплатные модели (`openrouter/free`) — 50 запросов в день без
-  покупки кредитов.
+### 3. Groq (бесплатно)
+Ключ: https://console.groq.com/keys. На бесплатном тарифе `openai/gpt-oss-120b` даёт около 1000 запросов в день —
+для личного бота с запасом. Модель вызывается только для фраз, которые не разобрали правила.
+Без ключа бот работает на командах и простых фразах («было», «оплатил 4», «перенесли на чт 18:00»).
 
-Модель вызывается только для фраз, которые не разобрали правила, и запросы идут с серверов Vercel.
-Без ключей бот работает на командах и простых фразах («было», «оплатил 4», «перенесли на чт 18:00»).
+### 4. `.env`
+```bash
+cp .env.example .env
+```
+Заполните всё. Верхний блок — то, что переносится в Vercel, нижний (`APP_URL`, `SUPABASE_PROJECT_REF`,
+`SUPABASE_DB_PASSWORD`) нужен только локальным скриптам.
 
-### 4. Vercel
-1. Создайте проект из этого репозитория (Framework: Other). Git-деплои отключены в `vercel.json`, деплоит только CI.
-2. Settings → Environment Variables (Production) — всё из `.env.example`.
-3. Account Settings → Tokens: создайте токен. `VERCEL_ORG_ID` и `VERCEL_PROJECT_ID` — в `.vercel/project.json`
-   после `npx vercel link` или в настройках проекта.
+### 5. Vercel
+1. Import Project из этого репозитория (Framework Preset: Other, без build-команды).
+2. Settings → Environment Variables (Production) — верхний блок `.env.example`. Проще всего вставить содержимое `.env`
+   целиком в форму (она принимает вставку многострочного текста) и удалить три локальные переменные.
+3. Deploy. Прод-адрес (например, `https://english-lessons-bot.vercel.app`) впишите в `APP_URL` в `.env`.
+4. Направьте бота и планировщик на прод:
+   ```bash
+   npm run prod
+   ```
+   Скрипт регистрирует webhook и меню команд, кладёт адрес `/api/tick` и `TICK_SECRET` в Supabase Vault
+   и проверяет, что тик отвечает.
 
-### 5. GitHub
-Settings → Secrets and variables → Actions:
-
-| Тип | Имя | Значение |
-|---|---|---|
-| secret | `SUPABASE_ACCESS_TOKEN` | токен аккаунта Supabase |
-| secret | `SUPABASE_DB_PASSWORD` | пароль БД |
-| secret | `SUPABASE_SERVICE_ROLE_KEY` | service_role ключ |
-| secret | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | из Vercel |
-| secret | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TICK_SECRET` | те же, что в Vercel |
-| variable | `SUPABASE_PROJECT_REF` | ref проекта |
-| variable | `SUPABASE_URL` | `https://<ref>.supabase.co` |
-| variable | `APP_URL` | прод-адрес Vercel, например `https://english-lessons-bot.vercel.app` |
-
-Пуш в `main` → проверки → миграции → деплой → регистрация webhook, команд и адреса тика. Деплой в конце сам
-вызывает `/api/tick` и падает, если тот не отвечает.
+Дальше каждый пуш в `main` деплоится сам. `npm run prod` повторять нужно, только если поменялись домен, секреты
+или список команд, а также после `npm run dev`, остановленного не через Ctrl+C.
 
 ### 6. Первый запуск
 Напишите боту `/start`, затем `/setbalance N`, где N — сколько оплаченных занятий у вас осталось сейчас.
@@ -94,8 +92,38 @@ Settings → Secrets and variables → Actions:
 ```bash
 npm ci
 npm run check          # typecheck + biome + vitest
-npm run tick:local     # тик против базы из .env; можно передать время: npm run tick:local -- 2026-11-02T17:55
 ```
+
+### Локальная проверка перед деплоем
+
+```bash
+npm run dev            # бот работает с этой машины
+# … проверяете в Telegram …
+# Ctrl+C               # webhook возвращается на прод
+```
+
+`npm run dev` снимает webhook и слушает Telegram long polling'ом, раз в минуту гоняет тик планировщика.
+Пока он запущен, прод не получает сообщения; по Ctrl+C webhook сам возвращается на `APP_URL`
+(если процесс убит иначе — `npm run prod`).
+
+Чтобы не трогать прод вовсе, создайте `.env.local` — он накладывается поверх `.env` в `dev` и `tick:local`:
+
+```bash
+TELEGRAM_BOT_TOKEN=<токен отдельного тестового бота>
+APP_URL=                     # пусто: по Ctrl+C не трогать webhook
+# SUPABASE_URL=… / SUPABASE_SERVICE_ROLE_KEY=…   # отдельный проект, чтобы не трогать боевые данные
+```
+
+Тик с подменой времени для проверки сценариев:
+
+```bash
+npm run tick:local -- 2026-11-02T17:55
+```
+
+### Миграции
+
+Новая миграция — файл в `supabase/migrations/`, затем `npm run db:push`. Применяйте до пуша кода, который на неё
+опирается.
 
 Настройки поведения (часы вопросов, порог напоминания, автоотметка, итоги недели) — переменные в `.env.example`.
 
@@ -105,10 +133,10 @@ npm run tick:local     # тик против базы из .env; можно пе
 api/                 Vercel Functions: telegram (webhook), tick (планировщик), health
 src/domain/          баланс, генерация занятий из расписания, планировщик уведомлений — чистые функции
 src/nlu/             разбор дат по-русски, быстрые правила, схема намерений (zod)
-src/llm/             OpenAI-совместимый клиент с цепочкой провайдеров, промпт разбора
+src/llm/             клиент Groq, промпт разбора
 src/services/        операции с журналом для отмены, статистика
 src/bot/             команды, кнопки, тексты
 src/jobs/tick.ts     один тик: создать занятия → посчитать → отправить
 supabase/migrations/ схема, RLS, pg_cron + Vault, стартовое расписание
-scripts/             post-deploy (webhook, команды, Vault), локальный тик
+scripts/             dev (локальный бот), prod (webhook, команды, Vault), db-push, локальный тик
 ```

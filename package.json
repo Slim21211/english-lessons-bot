@@ -14,8 +14,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "post-deploy": "tsx scripts/post-deploy.ts",
-    "tick:local": "node --env-file=.env --import tsx scripts/tick-local.ts"
+    "tick:local": "node --env-file=.env --env-file-if-exists=.env.local --import tsx scripts/tick-local.ts",
+    "dev": "node --env-file=.env --env-file-if-exists=.env.local --import tsx scripts/dev.ts",
+    "prod": "node --env-file=.env --import tsx scripts/prod.ts",
+    "db:push": "node --env-file=.env --import tsx scripts/db-push.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
