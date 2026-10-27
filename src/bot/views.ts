@@ -15,6 +15,13 @@ export const cb = {
   pay: (lessons: number) => `pay:${lessons}`,
   paySnooze: () => 'pay:snooze',
   undo: (logId: number) => `undo:${logId}`,
+  slotsCount: (n: number) => `sch:n:${n}`,
+  slotsNew: () => 'sch:new',
+  slotAdd: () => 'sch:add',
+  slotEdit: (id: number) => `sch:e:${id}`,
+  slotDelete: (id: number) => `sch:d:${id}`,
+  scheduleOk: () => 'sch:ok',
+  scheduleNo: () => 'sch:no',
   intentOk: (token: string) => `int:ok:${token}`,
   intentNo: (token: string) => `int:no:${token}`,
 };
@@ -46,6 +53,62 @@ export function postKeyboard(lesson: Lesson): InlineKeyboard {
 
 export function paymentKeyboard(packSize: number): InlineKeyboard {
   return new InlineKeyboard().text(`💳 Оплатил ${packSize}`, cb.pay(packSize)).text('⏰ Завтра', cb.paySnooze());
+}
+
+/** «пн 16:40» */
+export function slotTimeLabel(slot: Pick<Slot, 'weekday' | 'start_time'>): string {
+  const { hour, minute } = slotTime(slot);
+  return `${WEEKDAYS_SHORT[slot.weekday - 1]} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/** «каждый пн 16:40, 60 мин» — слово «каждый» подчёркивает, что это регулярное расписание, а не одно занятие. */
+export function slotLabel(slot: Pick<Slot, 'weekday' | 'start_time' | 'duration_min'>): string {
+  return `каждый ${slotTimeLabel(slot)}, ${slot.duration_min} мин`;
+}
+
+export function slotsCountKeyboard(): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (let n = 1; n <= 5; n++) kb.text(String(n), cb.slotsCount(n));
+  return kb;
+}
+
+export function scheduleKeyboard(slots: Slot[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const slot of slots) {
+    kb.text(`✏️ Каждый ${slotTimeLabel(slot)}`, cb.slotEdit(slot.id))
+      .text('🗑', cb.slotDelete(slot.id))
+      .row();
+  }
+  kb.text('➕ Добавить в расписание', cb.slotAdd());
+  if (slots.length > 0) kb.row().text('🔄 Задать расписание заново', cb.slotsNew());
+  return kb;
+}
+
+export function slotPrompt(index: number, total: number, defaultDuration: number): string {
+  const head = total > 1 ? `Занятие ${index} из ${total}` : 'Занятие';
+  return `${head}: день недели и время, например «пн 16:40». Если длится не ${defaultDuration} мин — добавь минуты в конце: «вт 18:00 90». /cancel — отмена.`;
+}
+
+export function scheduleConfirmKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text('✅ Да, изменить расписание', cb.scheduleOk()).text('✖️ Нет', cb.scheduleNo());
+}
+
+export const ONE_OFF_HINT =
+  'Если нужно перенести или отменить только одно занятие — расписание не трогай: нажми «🔁 Перенос» или «❌ Отменилось» в напоминании, либо напиши «перенесли пн на вт 16:40» / «9.11 отменяется».';
+
+/** Подтверждение изменения регулярного расписания: что именно поменяется в будущих занятиях. */
+export function scheduleChangeText(change: string, removed: Lesson[], addedCount: number, zone: string): string {
+  const dates =
+    removed
+      .slice(0, 5)
+      .map((l) => lessonStart(l, zone).toFormat('dd.MM'))
+      .join(', ') + (removed.length > 5 ? ', …' : '');
+  const lines = ['🗓 Меняю РЕГУЛЯРНОЕ расписание — для всех будущих недель, а не одно занятие:', change, ''];
+  if (removed.length > 0) lines.push(`Уберу будущих занятий: ${removed.length} (${dates}).`);
+  if (addedCount > 0) lines.push(`Создам занятий: ${addedCount}.`);
+  if (removed.length === 0 && addedCount === 0) lines.push('Будущие занятия не изменятся.');
+  lines.push('', ONE_OFF_HINT, '', 'Изменить расписание?');
+  return lines.join('\n');
 }
 
 export function undoKeyboard(logId: number): InlineKeyboard {
@@ -166,19 +229,17 @@ export function historyText(lessons: Lesson[], payments: Payment[], zone: string
 }
 
 export function scheduleText(slots: Slot[], pauses: Pause[]): string {
-  const lines: string[] = ['🗓 Расписание:'];
+  const lines: string[] = ['🗓 Регулярное расписание (повторяется каждую неделю):'];
   if (slots.length === 0) lines.push('не задано');
-  for (const s of slots) {
-    const { hour, minute } = slotTime(s);
-    lines.push(
-      `• ${WEEKDAYS_SHORT[s.weekday - 1]} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}, ${s.duration_min} мин`,
-    );
-  }
+  for (const s of slots) lines.push(`• ${slotLabel(s)}`);
   if (pauses.length > 0) {
     lines.push('', '⏸ Паузы:');
     for (const p of pauses) lines.push(`• ${p.starts_on} — ${p.ends_on}${p.note ? ` (${p.note})` : ''}`);
   }
-  lines.push('', 'Изменить: /schedule пн ср 16:40 (или «пн 16:40 чт 18:00 90» — с длительностью в конце)');
+  lines.push(
+    '',
+    'Кнопки ниже меняют расписание на все будущие недели. Перенести или отменить одно занятие — кнопками в напоминании или словами: «перенесли на чт 18:00», «9.11 отменяется».',
+  );
   return lines.join('\n');
 }
 
@@ -247,7 +308,7 @@ export const HELP_TEXT = [
   '/paid [занятий] [сумма] — записать оплату (по умолчанию пакет)',
   '/setbalance N — выставить текущий остаток (для старта или сверки)',
   '/add <дата время> — разовое занятие, например /add 5.11 18:00',
-  '/schedule — расписание; /schedule пн ср 16:40 — изменить',
+  '/schedule — регулярное расписание: поменять день/время навсегда, добавить или убрать',
   '/pause <с> <по> — перерыв, например /pause 28.12 10.01',
   '/history — последние занятия и оплаты',
   '/stats — статистика по месяцам',

@@ -2,7 +2,14 @@ import type { DateTime } from 'luxon';
 import { config } from '../config.js';
 import * as repo from '../db.js';
 import { type Balance, computeBalance } from '../domain/balance.js';
-import { generateFromSchedule, type SlotSpec } from '../domain/schedule.js';
+import {
+  type GeneratedLesson,
+  generateFromSchedule,
+  type SlotSpec,
+  sortSpecs,
+  specToSlot,
+  staleGeneratedLessons,
+} from '../domain/schedule.js';
 import type { Entity, Lesson, LessonStatus, LoggedOp, Pause, Payment } from '../domain/types.js';
 import { fmtShort, lessonEnd, lessonStart, lessonsWord, nowIn } from '../time.js';
 
@@ -226,19 +233,46 @@ export async function undo(logId?: number): Promise<{ summary: string } | null> 
   return { summary: entry.summary };
 }
 
+/** Что изменится в будущих занятиях, если сохранить такое расписание (для подтверждения). */
+export async function previewSchedule(
+  specs: SlotSpec[],
+  now: DateTime,
+): Promise<{ removed: Lesson[]; added: GeneratedLesson[] }> {
+  const cfg = config();
+  const [pauses, existing, all] = await Promise.all([
+    repo.getPauses(now.toISODate() as string),
+    repo.getFutureGeneratedLessons(now.toUTC().toISO() as string),
+    repo.getLessonsBetween(
+      now.toUTC().toISO() as string,
+      now
+        .plus({ days: cfg.HORIZON_DAYS + 1 })
+        .toUTC()
+        .toISO() as string,
+    ),
+  ]);
+  const slots = specs.map((s, i) => ({ ...specToSlot(s), id: -(i + 1), active: true }));
+  const wanted = generateFromSchedule(slots, pauses, now, cfg.HORIZON_DAYS, cfg.TIME_ZONE);
+  const removed = staleGeneratedLessons(existing, wanted);
+  const removedIds = new Set(removed.map((l) => l.id));
+  const kept = new Set(all.filter((l) => !removedIds.has(l.id)).map((l) => l.slot_key));
+  return { removed, added: wanted.filter((w) => !kept.has(w.slot_key)) };
+}
+
 /**
- * Новое регулярное расписание: старые слоты выключаются, будущие незатронутые
- * занятия из старого расписания удаляются и создаются заново по новому.
+ * Новое регулярное расписание целиком. Будущие неотмеченные занятия, которых в новом расписании
+ * нет (или у них другая длительность), удаляются; недостающие создаются; остальные не трогаются.
  */
 export async function applySchedule(specs: SlotSpec[], now: DateTime): Promise<{ removed: number; created: number }> {
-  await repo.replaceSlots(
-    specs.map((s) => ({
-      weekday: s.weekday,
-      start_time: `${String(s.hour).padStart(2, '0')}:${String(s.minute).padStart(2, '0')}:00`,
-      duration_min: s.duration_min,
-    })),
-  );
-  const removed = await repo.deleteFutureGeneratedLessons(now.toUTC().toISO() as string);
-  const created = await materializeSchedule(now);
-  return { removed, created };
+  const cfg = config();
+  await repo.replaceSlots(sortSpecs(specs).map(specToSlot));
+  const [slots, pauses, existing] = await Promise.all([
+    repo.getActiveSlots(),
+    repo.getPauses(now.toISODate() as string),
+    repo.getFutureGeneratedLessons(now.toUTC().toISO() as string),
+  ]);
+  const wanted = generateFromSchedule(slots, pauses, now, cfg.HORIZON_DAYS, cfg.TIME_ZONE);
+  const stale = staleGeneratedLessons(existing, wanted);
+  await repo.deleteLessons(stale.map((l) => l.id));
+  const created = await repo.insertGeneratedLessons(wanted);
+  return { removed: stale.length, created };
 }

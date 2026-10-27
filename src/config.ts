@@ -8,8 +8,11 @@ const schema = z.object({
   TELEGRAM_WEBHOOK_SECRET: z.string().regex(/^[A-Za-z0-9_-]{16,256}$/, 'только A-Z a-z 0-9 _ -, от 16 символов'),
   /** Свой Bot API сервер или прокси; по умолчанию официальный. */
   TELEGRAM_API_ROOT: z.url().optional(),
-  /** Ваш Telegram user id. Бот отвечает только ему и шлёт уведомления ему же. */
-  OWNER_TELEGRAM_ID: z.coerce.number().int().positive(),
+  /** Telegram id пользователей через запятую. У каждого свои занятия; остальным бот отказывает. */
+  ALLOWED_TELEGRAM_IDS: z
+    .string()
+    .transform((s) => s.split(',').map((id) => Number(id.trim())))
+    .pipe(z.array(z.number().int().positive()).min(1)),
 
   SUPABASE_URL: z.url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
@@ -66,7 +69,7 @@ export function setConfigForTests(partial: Partial<Config>): void {
     ...schema.parse({
       TELEGRAM_BOT_TOKEN: 'test',
       TELEGRAM_WEBHOOK_SECRET: 'test_secret_123456',
-      OWNER_TELEGRAM_ID: '1',
+      ALLOWED_TELEGRAM_IDS: '1',
       SUPABASE_URL: 'https://example.supabase.co',
       SUPABASE_SERVICE_ROLE_KEY: 'test',
       TICK_SECRET: 'test_tick_secret_123',

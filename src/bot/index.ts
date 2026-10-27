@@ -3,7 +3,14 @@ import { Bot, type Context, GrammyError } from 'grammy';
 import type { DateTime } from 'luxon';
 import { config } from '../config.js';
 import * as repo from '../db.js';
-import { parseScheduleArgs } from '../domain/schedule.js';
+import {
+  parseScheduleArgs,
+  parseSlotSpec,
+  type SlotSpec,
+  sameSlotTime,
+  slotToSpec,
+  specToSlot,
+} from '../domain/schedule.js';
 import { isOpen } from '../domain/types.js';
 import { isLlmConfigured, LlmUnavailableError } from '../llm/client.js';
 import { buildRefs, parseIntentWithLlm } from '../llm/parse-intent.js';
@@ -13,10 +20,20 @@ import { parseByRules } from '../nlu/rules.js';
 import * as svc from '../services/lessons.js';
 import { buildMonthStats } from '../services/stats.js';
 import { fmtShort, lessonStart, nowIn } from '../time.js';
+import { runAs } from '../user.js';
 import { describeAction, performAction, type Reply, type ResolvedAction, resolveIntent } from './actions.js';
 import * as views from './views.js';
 
-type AwaitState = { kind: 'reschedule'; lessonId: string } | { kind: 'amount'; paymentId: string };
+type AwaitState =
+  | { kind: 'reschedule'; lessonId: string }
+  | { kind: 'amount'; paymentId: string }
+  /** Пошаговый ввод расписания: сколько всего занятий и уже введённые. */
+  | { kind: 'slots'; total: number; specs: SlotSpec[] }
+  /** Изменение одного слота; slotId = null — новый слот. */
+  | { kind: 'slot'; slotId: number | null };
+
+/** Изменение регулярного расписания, ждущее подтверждения. */
+type PendingSchedule = { specs: SlotSpec[]; head: string };
 
 const COMMANDS = [
   { command: 'status', description: 'Сколько осталось и ближайшие занятия' },
@@ -43,9 +60,11 @@ export function getBot(): Bot {
     client: cfg.TELEGRAM_API_ROOT ? { apiRoot: cfg.TELEGRAM_API_ROOT } : {},
   });
 
-  // Только владелец. Остальным — вежливый отказ и их id (удобно при первой настройке).
+  // Только пользователи из ALLOWED_TELEGRAM_IDS, у каждого свои данные. Остальным — отказ и их id
+  // (удобно при добавлении нового пользователя).
   bot.use(async (ctx, next) => {
-    if (ctx.from?.id === cfg.OWNER_TELEGRAM_ID) return next();
+    const userId = ctx.from?.id;
+    if (userId && cfg.ALLOWED_TELEGRAM_IDS.includes(userId)) return runAs(userId, next);
     if (ctx.chat?.type === 'private' && ctx.message) {
       await ctx.reply(`Это личный бот. Ваш Telegram id: ${ctx.from?.id ?? 'неизвестен'}`);
     }
@@ -56,12 +75,15 @@ export function getBot(): Bot {
 
   bot.command('start', async (ctx) => {
     await svc.materializeSchedule(nowIn(cfg.TIME_ZONE));
-    const snap = await svc.loadSnapshot();
-    const firstRun = snap.balance.credits === 0 && snap.balance.used === 0;
-    const intro = firstRun
-      ? '\n\nДля начала скажи, сколько оплаченных занятий у тебя сейчас осталось: /setbalance 3 (или просто напиши «осталось 3 оплаченных»).'
-      : '';
-    await ctx.reply(`${views.HELP_TEXT}${intro}`);
+    const [snap, slots] = await Promise.all([svc.loadSnapshot(), repo.getActiveSlots()]);
+    await ctx.reply(views.HELP_TEXT);
+    if (slots.length === 0) {
+      await ctx.reply('Для начала настроим расписание. Сколько занятий в неделю?', {
+        reply_markup: views.slotsCountKeyboard(),
+      });
+    } else if (snap.balance.credits === 0 && snap.balance.used === 0) {
+      await ctx.reply(SET_BALANCE_HINT);
+    }
   });
 
   bot.command('help', (ctx) => ctx.reply(views.HELP_TEXT));
@@ -82,16 +104,16 @@ export function getBot(): Bot {
   bot.command('schedule', async (ctx) => {
     const args = ctx.match.trim();
     if (!args) {
-      await ctx.reply(await scheduleReply());
+      await sendReply(ctx, await scheduleReply());
       return;
     }
+    // Быстрый способ одной строкой: /schedule пн ср 16:40
     const specs = parseScheduleArgs(args, cfg.DEFAULT_DURATION_MIN);
     if (!specs) {
       await ctx.reply('Не понял расписание. Примеры:\n/schedule пн ср 16:40\n/schedule пн 16:40 чт 18:00 90');
       return;
     }
-    const res = await svc.applySchedule(specs, nowIn(cfg.TIME_ZONE));
-    await ctx.reply(`Расписание обновлено. Создано занятий вперёд: ${res.created}.\n\n${await scheduleReply()}`);
+    await saveOrProposeSchedule(ctx, specs);
   });
 
   bot.command('paid', async (ctx) => {
@@ -207,7 +229,7 @@ export function getBot(): Bot {
     await repo.setState('await', { kind: 'reschedule', lessonId } satisfies AwaitState, 60);
     await closeButtons(ctx);
     await ctx.reply(
-      `На когда перенесли занятие ${fmtShort(lessonStart(lesson, cfg.TIME_ZONE))}?\nНапример: «чт 18:00», «завтра в 17», «5.11 16:40». /cancel — отмена.`,
+      `На когда перенесли занятие ${fmtShort(lessonStart(lesson, cfg.TIME_ZONE))}? Переносится только это занятие, регулярное расписание не меняется.\nНапример: «чт 18:00», «завтра в 17», «5.11 16:40». /cancel — отмена.`,
     );
   });
 
@@ -222,6 +244,81 @@ export function getBot(): Bot {
     await repo.setState('pay_snooze_until', tomorrow.toISO());
     await ctx.answerCallbackQuery({ text: 'Напомню завтра' });
     await closeButtons(ctx);
+  });
+
+  // ---------- Расписание ----------
+
+  bot.callbackQuery(/^sch:n:([1-7])$/, async (ctx) => {
+    const total = Number(ctx.match[1]);
+    await ctx.answerCallbackQuery();
+    await closeButtons(ctx);
+    await repo.setState('await', { kind: 'slots', total, specs: [] } satisfies AwaitState, 60);
+    await ctx.reply(views.slotPrompt(1, total, cfg.DEFAULT_DURATION_MIN));
+  });
+
+  bot.callbackQuery('sch:new', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await closeButtons(ctx);
+    await ctx.reply('Сколько занятий в неделю?', { reply_markup: views.slotsCountKeyboard() });
+  });
+
+  bot.callbackQuery('sch:add', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await closeButtons(ctx);
+    await repo.setState('await', { kind: 'slot', slotId: null } satisfies AwaitState, 60);
+    await ctx.reply(views.slotPrompt(1, 1, cfg.DEFAULT_DURATION_MIN));
+  });
+
+  bot.callbackQuery(/^sch:e:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const slot = (await repo.getActiveSlots()).find((s) => s.id === Number(ctx.match[1]));
+    if (!slot) {
+      await ctx.reply('Расписание уже изменилось — открой /schedule заново.');
+      return;
+    }
+    await closeButtons(ctx);
+    await repo.setState('await', { kind: 'slot', slotId: slot.id } satisfies AwaitState, 60);
+    await ctx.reply(
+      [
+        `Меняем регулярное занятие «${views.slotLabel(slot)}» на все будущие недели.`,
+        'Новый день и время? Например «вт 16:40» или «вт 18:00 90». /cancel — отмена.',
+        '',
+        views.ONE_OFF_HINT,
+      ].join('\n'),
+    );
+  });
+
+  bot.callbackQuery(/^sch:d:(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const slots = await repo.getActiveSlots();
+    const slot = slots.find((s) => s.id === Number(ctx.match[1]));
+    if (!slot) {
+      await ctx.reply('Расписание уже изменилось — открой /schedule заново.');
+      return;
+    }
+    await closeButtons(ctx);
+    await proposeSchedule(
+      ctx,
+      slots.filter((s) => s.id !== slot.id).map(slotToSpec),
+      `убрать: ${views.slotLabel(slot)}`,
+      'Занятие убрано из расписания.',
+    );
+  });
+
+  bot.callbackQuery(/^sch:(ok|no)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await closeButtons(ctx);
+    const pending = await repo.getState<PendingSchedule>('pending_schedule');
+    await repo.deleteState('pending_schedule');
+    if (ctx.match[1] === 'no') {
+      await ctx.reply('Ок, расписание не меняю.');
+      return;
+    }
+    if (!pending) {
+      await ctx.reply('Подтверждение устарело — открой /schedule заново.');
+      return;
+    }
+    await saveSchedule(ctx, pending.specs, pending.head);
   });
 
   bot.callbackQuery(/^undo:(\d+)$/, async (ctx) => {
@@ -264,6 +361,10 @@ export function getBot(): Bot {
     if (awaiting?.kind === 'reschedule') {
       const handled = await handleRescheduleAnswer(ctx, awaiting.lessonId, text, now);
       if (handled) return;
+    }
+    if (awaiting?.kind === 'slots' || awaiting?.kind === 'slot') {
+      await handleSlotAnswer(ctx, awaiting, text);
+      return;
     }
     if (awaiting?.kind === 'amount') {
       const amount = Number(
@@ -339,13 +440,106 @@ async function statusReply(): Promise<Reply> {
   };
 }
 
-async function scheduleReply(): Promise<string> {
+const SET_BALANCE_HINT =
+  'Теперь скажи, сколько оплаченных занятий у тебя сейчас осталось: /setbalance 3 (или «осталось 3 оплаченных»).';
+
+async function scheduleReply(): Promise<Reply> {
   const cfg = config();
   const [slots, pauses] = await Promise.all([
     repo.getActiveSlots(),
     repo.getPauses(nowIn(cfg.TIME_ZONE).toISODate() as string),
   ]);
-  return views.scheduleText(slots, pauses);
+  return { text: views.scheduleText(slots, pauses), keyboard: views.scheduleKeyboard(slots) };
+}
+
+/** Сохраняет расписание целиком и показывает результат; при первой настройке — подсказка про остаток. */
+async function saveSchedule(ctx: Context, specs: SlotSpec[], head = 'Расписание сохранено.'): Promise<void> {
+  const cfg = config();
+  const res = await svc.applySchedule(specs, nowIn(cfg.TIME_ZONE));
+  const changes = [res.created ? `создано занятий: ${res.created}` : '', res.removed ? `убрано: ${res.removed}` : '']
+    .filter(Boolean)
+    .join(', ');
+  const schedule = await scheduleReply();
+  await sendReply(ctx, { ...schedule, text: `✅ ${head}${changes ? ` Вперёд ${changes}.` : ''}\n\n${schedule.text}` });
+  const totals = await repo.getBalanceTotals();
+  if (specs.length > 0 && totals.credits === 0 && totals.used === 0) await ctx.reply(SET_BALANCE_HINT);
+}
+
+/** Первая настройка сохраняется сразу; замена существующего расписания — только после подтверждения. */
+async function saveOrProposeSchedule(ctx: Context, specs: SlotSpec[]): Promise<void> {
+  const current = await repo.getActiveSlots();
+  if (current.length === 0) {
+    await saveSchedule(ctx, specs);
+    return;
+  }
+  const list = (labels: string[]) => labels.join('; ') || 'пусто';
+  await proposeSchedule(
+    ctx,
+    specs,
+    `было: ${list(current.map((s) => views.slotLabel(s)))}\nстанет: ${list(specs.map((s) => views.slotLabel(specToSlot(s))))}`,
+    'Расписание сохранено.',
+  );
+}
+
+/** Показывает, что изменится в будущих занятиях, и ждёт «Да, изменить расписание». */
+async function proposeSchedule(ctx: Context, specs: SlotSpec[], change: string, head: string): Promise<void> {
+  const cfg = config();
+  const preview = await svc.previewSchedule(specs, nowIn(cfg.TIME_ZONE));
+  await repo.setState('pending_schedule', { specs, head } satisfies PendingSchedule, 30);
+  await ctx.reply(views.scheduleChangeText(change, preview.removed, preview.added.length, cfg.TIME_ZONE), {
+    reply_markup: views.scheduleConfirmKeyboard(),
+  });
+}
+
+/** Ответ «пн 16:40» при пошаговом вводе расписания или изменении одного слота. */
+async function handleSlotAnswer(
+  ctx: Context,
+  awaiting: Extract<AwaitState, { kind: 'slots' | 'slot' }>,
+  text: string,
+): Promise<void> {
+  const cfg = config();
+  const spec = parseSlotSpec(text, cfg.DEFAULT_DURATION_MIN);
+  if (!spec) {
+    await ctx.reply('Не понял. Нужны день недели и время: «пн 16:40» или «вт 18:00 90». /cancel — отмена.');
+    return;
+  }
+
+  if (awaiting.kind === 'slots') {
+    if (awaiting.specs.some((s) => sameSlotTime(s, spec))) {
+      await ctx.reply('Это занятие уже есть в списке — введи другое время.');
+      return;
+    }
+    const specs = [...awaiting.specs, spec];
+    if (specs.length < awaiting.total) {
+      await repo.setState('await', { ...awaiting, specs } satisfies AwaitState, 60);
+      await ctx.reply(views.slotPrompt(specs.length + 1, awaiting.total, cfg.DEFAULT_DURATION_MIN));
+      return;
+    }
+    await repo.deleteState('await');
+    await saveOrProposeSchedule(ctx, specs);
+    return;
+  }
+
+  const slots = await repo.getActiveSlots();
+  const others = slots.filter((s) => s.id !== awaiting.slotId).map(slotToSpec);
+  if (awaiting.slotId !== null && others.length === slots.length) {
+    await repo.deleteState('await');
+    await ctx.reply('Расписание уже изменилось — открой /schedule заново.');
+    return;
+  }
+  if (others.some((s) => sameSlotTime(s, spec))) {
+    await ctx.reply('В это время уже есть занятие — введи другое. /cancel — отмена.');
+    return;
+  }
+  await repo.deleteState('await');
+  const edited = slots.find((s) => s.id === awaiting.slotId);
+  const next = views.slotLabel(specToSlot(spec));
+  await proposeSchedule(
+    ctx,
+    [...others, spec],
+    edited ? `${views.slotLabel(edited)} → ${next}` : `добавить: ${next}`,
+    edited ? 'Регулярное занятие изменено.' : 'Занятие добавлено в расписание.',
+  );
 }
 
 async function statsReply(): Promise<string> {
@@ -418,7 +612,7 @@ async function handleIntent(ctx: Context, input: Intent | string, opts: { confir
       await ctx.reply(views.historyText(lessons, payments, cfg.TIME_ZONE));
     }
     if (intent.what === 'stats') await ctx.reply(await statsReply());
-    if (intent.what === 'schedule') await ctx.reply(await scheduleReply());
+    if (intent.what === 'schedule') await sendReply(ctx, await scheduleReply());
     return;
   }
 

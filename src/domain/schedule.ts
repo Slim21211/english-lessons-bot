@@ -61,6 +61,45 @@ export interface SlotSpec {
   duration_min: number;
 }
 
+export function slotToSpec(slot: Slot): SlotSpec {
+  return { weekday: slot.weekday, ...slotTime(slot), duration_min: slot.duration_min };
+}
+
+export function specToSlot(spec: SlotSpec): Omit<Slot, 'id' | 'active'> {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return {
+    weekday: spec.weekday,
+    start_time: `${pad(spec.hour)}:${pad(spec.minute)}:00`,
+    duration_min: spec.duration_min,
+  };
+}
+
+export const sameSlotTime = (a: SlotSpec, b: SlotSpec): boolean =>
+  a.weekday === b.weekday && a.hour === b.hour && a.minute === b.minute;
+
+export function sortSpecs(specs: SlotSpec[]): SlotSpec[] {
+  return [...specs].sort((a, b) => a.weekday - b.weekday || a.hour - b.hour || a.minute - b.minute);
+}
+
+/**
+ * Какие из будущих сгенерированных занятий больше не соответствуют расписанию
+ * (слот удалён, перенесён или поменялась длительность). Остальные остаются как есть —
+ * вместе с отметками «в силе» и «ДЗ сделано».
+ */
+export function staleGeneratedLessons<T extends { slot_key: string | null; duration_min: number }>(
+  existing: T[],
+  wanted: GeneratedLesson[],
+): T[] {
+  const keep = new Map(wanted.map((w) => [w.slot_key, w.duration_min]));
+  return existing.filter((l) => l.slot_key === null || keep.get(l.slot_key) !== l.duration_min);
+}
+
+/** Один слот: «пн 16:40» или «вт 18:00 90». */
+export function parseSlotSpec(input: string, defaultDuration: number): SlotSpec | null {
+  const specs = parseScheduleArgs(input, defaultDuration);
+  return specs?.length === 1 ? (specs[0] ?? null) : null;
+}
+
 const WEEKDAY_TOKENS: Record<string, number> = {
   пн: 1,
   пон: 1,
@@ -124,5 +163,5 @@ export function parseScheduleArgs(input: string, defaultDuration: number): SlotS
   if (pendingDays.length > 0 || specs.length === 0) return null;
 
   const unique = new Map(specs.map((s) => [`${s.weekday}@${s.hour}:${s.minute}`, s]));
-  return [...unique.values()].sort((a, b) => a.weekday - b.weekday || a.hour - b.hour || a.minute - b.minute);
+  return sortSpecs([...unique.values()]);
 }

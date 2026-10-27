@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { generateFromSchedule, parseScheduleArgs } from '../src/domain/schedule.js';
+import {
+  generateFromSchedule,
+  parseScheduleArgs,
+  parseSlotSpec,
+  slotToSpec,
+  specToSlot,
+  staleGeneratedLessons,
+} from '../src/domain/schedule.js';
 import type { Slot } from '../src/domain/types.js';
 import { pickDefaultLesson } from '../src/services/lessons.js';
 import { buildMonthStats } from '../src/services/stats.js';
@@ -92,5 +99,43 @@ describe('buildMonthStats', () => {
     );
     expect(stats.map((s) => s.month)).toEqual(['ноябрь 2026', 'октябрь 2026']);
     expect(stats[1]).toMatchObject({ done: 1, burned: 1, bought: 8, spent: 8000, priced: 4 });
+  });
+});
+
+describe('изменение расписания по слотам', () => {
+  const slot = (id: number, weekday: number, time: string, duration = 60): Slot => ({
+    id,
+    weekday,
+    start_time: `${time}:00`,
+    duration_min: duration,
+    active: true,
+  });
+
+  it('parseSlotSpec: ровно одно занятие', () => {
+    expect(parseSlotSpec('вт 18:00 90', 60)).toEqual({ weekday: 2, hour: 18, minute: 0, duration_min: 90 });
+    expect(parseSlotSpec('пн 16:40', 60)).toEqual({ weekday: 1, hour: 16, minute: 40, duration_min: 60 });
+    expect(parseSlotSpec('пн ср 16:40', 60)).toBeNull();
+    expect(parseSlotSpec('завтра', 60)).toBeNull();
+  });
+
+  it('slotToSpec и specToSlot — туда и обратно', () => {
+    const s = slot(1, 3, '16:40', 45);
+    expect(specToSlot(slotToSpec(s))).toEqual({ weekday: 3, start_time: '16:40:00', duration_min: 45 });
+  });
+
+  it('перенос пн → вт удаляет только понедельничные занятия', () => {
+    const now = at('2026-10-27T10:00');
+    const before = generateFromSchedule([slot(1, 1, '16:40'), slot(2, 3, '16:40')], [], now, 14, ZONE);
+    const after = generateFromSchedule([slot(3, 2, '16:40'), slot(4, 3, '16:40')], [], now, 14, ZONE);
+    const stale = staleGeneratedLessons(before, after);
+    expect(stale.map((l) => l.slot_key)).toEqual(['2026-11-02@16:40', '2026-11-09@16:40']);
+  });
+
+  it('смена длительности пересоздаёт занятия этого слота', () => {
+    const now = at('2026-10-27T10:00');
+    const before = generateFromSchedule([slot(1, 3, '16:40', 60)], [], now, 7, ZONE);
+    const after = generateFromSchedule([slot(2, 3, '16:40', 90)], [], now, 7, ZONE);
+    expect(staleGeneratedLessons(before, after)).toHaveLength(1);
+    expect(staleGeneratedLessons(before, before)).toEqual([]);
   });
 });

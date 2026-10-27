@@ -7,6 +7,7 @@ import { type Notice, plan } from '../domain/planner.js';
 import { isOpen } from '../domain/types.js';
 import * as svc from '../services/lessons.js';
 import { lessonStart, nowIn } from '../time.js';
+import { runAs } from '../user.js';
 
 export interface TickResult {
   at: string;
@@ -17,13 +18,32 @@ export interface TickResult {
 }
 
 /**
- * Один «тик» планировщика. Вызывается pg_cron каждые 5 минут.
+ * Один «тик» планировщика по всем пользователям. Вызывается pg_cron каждые 5 минут.
  * Идемпотентен: создание занятий через уникальный slot_key, уведомления — через ключи в notifications.
+ * Ключи в результате — с префиксом Telegram id пользователя.
  */
 export async function runTick(now: DateTime = nowIn(config().TIME_ZONE)): Promise<TickResult> {
   const cfg = config();
   const api = new Api(cfg.TELEGRAM_BOT_TOKEN, cfg.TELEGRAM_API_ROOT ? { apiRoot: cfg.TELEGRAM_API_ROOT } : {});
-  const chatId = cfg.OWNER_TELEGRAM_ID;
+  const result: TickResult = { at: now.toISO() as string, generated: 0, sent: [], skipped: [], errors: [] };
+  for (const userId of cfg.ALLOWED_TELEGRAM_IDS) {
+    // Ошибка одного пользователя не мешает остальным
+    try {
+      const own = await runAs(userId, () => runUserTick(api, userId, now));
+      result.generated += own.generated;
+      result.sent.push(...own.sent.map((k) => `${userId}/${k}`));
+      result.skipped.push(...own.skipped.map((k) => `${userId}/${k}`));
+      result.errors.push(...own.errors.map((e) => `${userId}/${e}`));
+    } catch (error) {
+      result.errors.push(`${userId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return result;
+}
+
+/** Тик одного пользователя; личный чат с ботом имеет тот же id, что и пользователь. */
+async function runUserTick(api: Api, chatId: number, now: DateTime): Promise<TickResult> {
+  const cfg = config();
   const result: TickResult = { at: now.toISO() as string, generated: 0, sent: [], skipped: [], errors: [] };
 
   result.generated = await svc.materializeSchedule(now);
