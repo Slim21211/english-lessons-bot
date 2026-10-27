@@ -13,6 +13,8 @@ const settings: PlannerSettings = {
   weeklyDigest: true,
   weeklyDigestHour: 20,
   autoDoneAfterHours: 0,
+  homework: false,
+  homeworkHour: 9,
 };
 
 function run(
@@ -115,5 +117,57 @@ describe('plan', () => {
     expect(run(at('2026-11-01T19:59'), [])).toEqual([]);
     expect(run(at('2026-11-01T20:00'), []).map((n) => n.kind)).toEqual(['weekly']);
     expect(run(at('2026-11-01T20:00'), [], { settings: { weeklyDigest: false } })).toEqual([]);
+  });
+});
+
+describe('напоминания о ДЗ', () => {
+  const hw = { settings: { homework: true } };
+  // пн 02.11 16:40
+  const keysAt = (now: string, lessons: Lesson[], sent: string[] = []) =>
+    run(at(now), lessons, { ...hw, sent })
+      .filter((n) => n.kind === 'homework')
+      .map((n) => n.key);
+
+  it('накануне в 9:00, за сутки, в день занятия в 9:00 и за 2 часа', () => {
+    const l = lesson('2026-11-02T16:40');
+    expect(keysAt('2026-11-01T08:59', [l])).toEqual([]);
+    expect(keysAt('2026-11-01T09:00', [l])).toEqual([noticeKey.homework(l.id, 'eve_morning')]);
+    expect(keysAt('2026-11-01T12:00', [l], [noticeKey.homework(l.id, 'eve_morning')])).toEqual([]);
+    expect(keysAt('2026-11-01T16:40', [l])).toEqual([noticeKey.homework(l.id, 'day_before')]);
+    expect(keysAt('2026-11-02T09:00', [l])).toEqual([noticeKey.homework(l.id, 'morning')]);
+    expect(keysAt('2026-11-02T14:40', [l])).toEqual([noticeKey.homework(l.id, 'two_hours')]);
+    expect(keysAt('2026-11-02T16:41', [l])).toEqual([]);
+  });
+
+  it('после отметки «ДЗ сделано» не напоминает', () => {
+    const l = { ...lesson('2026-11-02T16:40'), homework_done_at: '2026-11-01T10:00:00Z' };
+    expect(keysAt('2026-11-02T09:00', [l])).toEqual([]);
+    expect(keysAt('2026-11-02T14:40', [l])).toEqual([]);
+  });
+
+  it('пропущенные напоминания не шлёт пачкой — только последнее', () => {
+    const l = lesson('2026-11-02T16:40');
+    expect(keysAt('2026-11-02T10:00', [l])).toEqual([noticeKey.homework(l.id, 'morning')]);
+  });
+
+  it('совпавшие по времени напоминания не дублирует', () => {
+    // Занятие в 9:00: «накануне в 9» и «за сутки» — одно время; «в день занятия в 9» — уже начало.
+    const l = lesson('2026-11-02T09:00');
+    const first = keysAt('2026-11-01T09:00', [l]);
+    expect(first).toHaveLength(1);
+    expect(keysAt('2026-11-01T09:05', [l], first)).toEqual([]);
+    expect(keysAt('2026-11-02T07:00', [l], first)).toEqual([noticeKey.homework(l.id, 'two_hours')]);
+  });
+
+  it('не напоминает задним числом о занятии, добавленном позже', () => {
+    const l = { ...lesson('2026-11-02T16:40'), created_at: at('2026-11-01T20:00').toUTC().toISO() as string };
+    expect(keysAt('2026-11-01T20:05', [l])).toEqual([]);
+    expect(keysAt('2026-11-02T09:00', [l])).toEqual([noticeKey.homework(l.id, 'morning')]);
+  });
+
+  it('не напоминает об отменённых занятиях и при HOMEWORK_REMINDERS=off', () => {
+    expect(keysAt('2026-11-02T09:00', [lesson('2026-11-02T16:40', 'cancelled')])).toEqual([]);
+    const l = lesson('2026-11-02T16:40');
+    expect(run(at('2026-11-02T09:00'), [l]).filter((n) => n.kind === 'homework')).toEqual([]);
   });
 });

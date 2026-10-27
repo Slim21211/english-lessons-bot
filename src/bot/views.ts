@@ -11,6 +11,7 @@ import { fmtLong, fmtMoney, fmtRelativeDay, fmtShort, lessonStart, lessonsWord, 
 export const cb = {
   status: (status: 'done' | 'cancelled' | 'burned' | 'confirmed', id: string) => `ls:${status}:${id}`,
   reschedule: (id: string) => `lr:${id}`,
+  homework: (id: string) => `hw:${id}`,
   pay: (lessons: number) => `pay:${lessons}`,
   paySnooze: () => 'pay:snooze',
   undo: (logId: number) => `undo:${logId}`,
@@ -27,6 +28,10 @@ export function morningKeyboard(lesson: Lesson): InlineKeyboard {
     .row()
     .text('❌ Отменилось', cb.status('cancelled', lesson.id))
     .text('🔥 Отмена, сгорело', cb.status('burned', lesson.id));
+}
+
+export function homeworkKeyboard(lesson: Lesson): InlineKeyboard {
+  return new InlineKeyboard().text('✅ ДЗ сделано', cb.homework(lesson.id));
 }
 
 export function postKeyboard(lesson: Lesson): InlineKeyboard {
@@ -90,9 +95,10 @@ export function statusText(balance: Balance, zone: string, now: DateTime, limit 
     for (const { lesson, paid } of upcoming) {
       const mark = paid ? '✅' : '⚠️';
       const confirmed = lesson.status === 'confirmed' ? ' (подтверждено)' : '';
-      lines.push(`${mark} ${fmtShort(lessonStart(lesson, zone))}${confirmed}`);
+      const homework = lesson.homework_done_at ? ' 📚' : '';
+      lines.push(`${mark} ${fmtShort(lessonStart(lesson, zone))}${confirmed}${homework}`);
     }
-    lines.push('', '✅ — оплачено, ⚠️ — нужна оплата');
+    lines.push('', '✅ — оплачено, ⚠️ — нужна оплата, 📚 — ДЗ сделано');
   } else {
     lines.push('', 'Запланированных занятий нет.');
   }
@@ -101,6 +107,16 @@ export function statusText(balance: Balance, zone: string, now: DateTime, limit 
 
 export function morningText(lesson: Lesson, zone: string): string {
   return `☀️ Сегодня в ${lessonStart(lesson, zone).toFormat('HH:mm')} английский. В силе?`;
+}
+
+export function homeworkText(lesson: Lesson, zone: string, now: DateTime): string {
+  const start = lessonStart(lesson, zone);
+  const hours = start.diff(now, 'hours').hours;
+  const when =
+    hours <= 3
+      ? `через ${hours < 1 ? `${Math.max(1, Math.round(hours * 60))} мин` : `${Math.round(hours)} ч`}`
+      : `${fmtRelativeDay(start, now)} в ${start.toFormat('HH:mm')}`;
+  return `📚 Английский ${when}. ДЗ сделано?`;
 }
 
 export function postText(lesson: Lesson, zone: string, nag: boolean): string {
@@ -224,7 +240,7 @@ export function weeklyText(week: Lesson[], balance: Balance, zone: string, now: 
 }
 
 export const HELP_TEXT = [
-  'Я слежу за занятиями английским: спрашиваю, были ли они, считаю оплаченные и напоминаю об оплате.',
+  'Я слежу за занятиями английским: спрашиваю, были ли они, считаю оплаченные, напоминаю об оплате и о ДЗ.',
   '',
   'Команды:',
   '/status — сколько осталось и ближайшие занятия',
@@ -235,7 +251,8 @@ export const HELP_TEXT = [
   '/pause <с> <по> — перерыв, например /pause 28.12 10.01',
   '/history — последние занятия и оплаты',
   '/stats — статистика по месяцам',
+  '/hw — ДЗ к ближайшему занятию сделано (больше не напоминаю)',
   '/undo — отменить последнее действие',
   '',
-  'Можно писать обычным текстом: «было», «перенесли на пт в 18», «оплатил 4 занятия 8000», «в декабре с 28 по 10 января каникулы».',
+  'Можно писать обычным текстом: «было», «дз сделано», «перенесли на пт в 18», «оплатил 4 занятия 8000», «в декабре с 28 по 10 января каникулы».',
 ].join('\n');

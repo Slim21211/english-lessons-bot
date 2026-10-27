@@ -16,6 +16,11 @@ describe('parseByRules', () => {
     ['статус', { type: 'query', what: 'status' }],
     ['undo', { type: 'undo' }],
     ['отмени последнее', { type: 'undo' }],
+    ['дз сделано', { type: 'homework_done', lesson_ref: null }],
+    ['ДЗ готово!', { type: 'homework_done', lesson_ref: null }],
+    ['сделал домашку', { type: 'homework_done', lesson_ref: null }],
+    ['домашнее задание сделано', { type: 'homework_done', lesson_ref: null }],
+    ['сделано', { type: 'lesson_status', lesson_ref: null, status: 'done' }],
   ])('%s', (text, expected) => {
     expect(parseByRules(text, ctx)).toEqual(expected);
   });

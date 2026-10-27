@@ -1,4 +1,4 @@
-import type { DateTime } from 'luxon';
+import { DateTime } from 'luxon';
 import { lessonEnd, lessonStart } from '../time.js';
 import type { Balance } from './balance.js';
 import { isOpen, type Lesson } from './types.js';
@@ -11,6 +11,8 @@ export interface PlannerSettings {
   weeklyDigest: boolean;
   weeklyDigestHour: number;
   autoDoneAfterHours: number;
+  homework: boolean;
+  homeworkHour: number;
 }
 
 export interface PlannerInput {
@@ -27,6 +29,7 @@ export interface PlannerInput {
 }
 
 export type Notice =
+  | { kind: 'homework'; key: string; lesson: Lesson; slot: HomeworkSlot }
   | { kind: 'morning'; key: string; lesson: Lesson }
   | { kind: 'post'; key: string; lesson: Lesson }
   | { kind: 'post_nag'; key: string; lesson: Lesson }
@@ -35,6 +38,7 @@ export type Notice =
   | { kind: 'weekly'; key: string };
 
 export const noticeKey = {
+  homework: (id: string, slot: HomeworkSlot) => `hw_${slot}:${id}`,
   morning: (id: string) => `morning:${id}`,
   post: (id: string) => `post:${id}`,
   postNag: (id: string) => `post_nag:${id}`,
@@ -42,6 +46,22 @@ export const noticeKey = {
   payment: (day: DateTime) => `payment:${day.toISODate()}`,
   weekly: (day: DateTime) => `weekly:${day.toFormat("kkkk-'W'WW")}`,
 };
+
+/** Напоминания о ДЗ: накануне утром, за сутки, в день занятия утром, за 2 часа. */
+export type HomeworkSlot = 'eve_morning' | 'day_before' | 'morning' | 'two_hours';
+
+/** Моменты напоминаний о ДЗ по времени, только те, что раньше начала занятия. */
+export function homeworkTimes(start: DateTime, hour: number): { slot: HomeworkSlot; at: DateTime }[] {
+  const day = start.startOf('day');
+  return [
+    { slot: 'eve_morning' as const, at: day.minus({ days: 1 }).set({ hour }) },
+    { slot: 'day_before' as const, at: start.minus({ hours: 24 }) },
+    { slot: 'morning' as const, at: day.set({ hour }) },
+    { slot: 'two_hours' as const, at: start.minus({ hours: 2 }) },
+  ]
+    .filter((t) => t.at < start)
+    .sort((a, b) => a.at.toMillis() - b.at.toMillis());
+}
 
 /**
  * Решает, какие уведомления нужно отправить прямо сейчас.
@@ -59,6 +79,18 @@ export function plan(input: PlannerInput): Notice[] {
   for (const lesson of open) {
     const start = lessonStart(lesson, zone);
     const end = lessonEnd(lesson, zone);
+
+    // ДЗ: шлём только последнее наступившее напоминание — пропущенные раньше не догоняем пачкой,
+    // а совпавшие по времени (занятие в HOMEWORK_HOUR) не дублируем. Напоминания до создания
+    // занятия (добавлено или перенесено позже) не шлём.
+    if (settings.homework && !lesson.homework_done_at && now < start) {
+      const createdAt = lesson.created_at ? DateTime.fromISO(lesson.created_at) : null;
+      const due = homeworkTimes(start, settings.homeworkHour)
+        .filter((t) => t.at <= now && !(createdAt && t.at < createdAt))
+        .at(-1);
+      const key = due && noticeKey.homework(lesson.id, due.slot);
+      if (due && key && !sent.has(key)) notices.push({ kind: 'homework', key, lesson, slot: due.slot });
+    }
 
     // Утром в день занятия: «в силе?» — только если ещё не подтверждено и занятие позже утра.
     const morningKey = noticeKey.morning(lesson.id);

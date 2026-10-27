@@ -21,6 +21,10 @@ export const IntentSchema = z.discriminatedUnion('type', [
     new_datetime: localDateTime,
   }),
   z.object({
+    type: z.literal('homework_done'),
+    lesson_ref: lessonRef,
+  }),
+  z.object({
     type: z.literal('add_lesson'),
     datetime: localDateTime,
     duration_min: z.number().int().min(10).max(600).nullable().default(null),
@@ -53,6 +57,7 @@ export type Intent = z.infer<typeof IntentSchema>;
 export const MUTATING_INTENTS: ReadonlySet<Intent['type']> = new Set([
   'lesson_status',
   'reschedule',
+  'homework_done',
   'add_lesson',
   'payment',
   'set_balance',

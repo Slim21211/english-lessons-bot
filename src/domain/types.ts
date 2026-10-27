@@ -14,6 +14,8 @@ export interface Lesson {
   rescheduled_from: string | null;
   note: string | null;
   resolved_at: string | null;
+  /** Когда отмечено «ДЗ сделано»; null — напоминать о домашке. */
+  homework_done_at: string | null;
   created_at?: string;
   updated_at?: string;
 }

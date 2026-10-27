@@ -23,6 +23,7 @@ const COMMANDS = [
   { command: 'paid', description: 'Записать оплату: /paid 4 8000' },
   { command: 'setbalance', description: 'Выставить остаток оплаченных' },
   { command: 'add', description: 'Разовое занятие: /add 5.11 18:00' },
+  { command: 'hw', description: 'ДЗ к ближайшему занятию сделано' },
   { command: 'schedule', description: 'Расписание и паузы' },
   { command: 'pause', description: 'Перерыв: /pause 28.12 10.01' },
   { command: 'history', description: 'Последние занятия и оплаты' },
@@ -155,6 +156,16 @@ export function getBot(): Bot {
     );
   });
 
+  bot.command('hw', async (ctx) => {
+    const snap = await svc.loadSnapshot();
+    const lesson = svc.pickDefaultLesson('homework', snap.balance.upcoming, snap.now, snap.zone);
+    if (!lesson) {
+      await ctx.reply('Впереди нет запланированных занятий.');
+      return;
+    }
+    await sendReply(ctx, await performAction({ type: 'homework', lessonId: lesson.id }));
+  });
+
   bot.command('undo', async (ctx) => {
     await sendReply(ctx, await performAction({ type: 'undo' }));
   });
@@ -174,6 +185,13 @@ export function getBot(): Bot {
     ];
     await ctx.answerCallbackQuery();
     const reply = await performAction({ type: 'status', lessonId, status });
+    await closeButtons(ctx);
+    await sendReply(ctx, reply);
+  });
+
+  bot.callbackQuery(/^hw:([0-9a-f-]{36})$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const reply = await performAction({ type: 'homework', lessonId: ctx.match[1] as string });
     await closeButtons(ctx);
     await sendReply(ctx, reply);
   });

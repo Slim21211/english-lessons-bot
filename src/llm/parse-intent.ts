@@ -44,6 +44,7 @@ export function buildSystemPrompt(ctx: IntentContext): string {
     '{"type":"lesson_status","lesson_ref":"L3"|null,"status":"done"|"cancelled"|"burned"|"confirmed"}',
     '  done — занятие состоялось; cancelled — отменилось без оплаты; burned — отменилось, но деньги сгорели; confirmed — подтверждено, что будет.',
     '{"type":"reschedule","lesson_ref":"L3"|null,"new_datetime":"YYYY-MM-DDTHH:mm"} — перенос занятия на новое время.',
+    '{"type":"homework_done","lesson_ref":"L3"|null} — домашнее задание к занятию сделано. null — к ближайшему будущему.',
     '{"type":"add_lesson","datetime":"YYYY-MM-DDTHH:mm","duration_min":число|null} — дополнительное разовое занятие.',
     `{"type":"payment","lessons":число,"amount":число|null} — оплата. Если число занятий не названо, lessons=${ctx.packSize}. amount — сумма в рублях, если названа.`,
     '{"type":"set_balance","remaining":число} — пользователь сообщает, сколько оплаченных занятий у него сейчас осталось.',

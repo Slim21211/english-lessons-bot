@@ -33,6 +33,9 @@ const schema = z.object({
   WEEKLY_DIGEST_HOUR: hour.default(20),
   /** Если > 0: неотмеченное занятие через N часов считается состоявшимся. 0 — выключено. */
   AUTO_DONE_AFTER_HOURS: z.coerce.number().int().min(0).default(0),
+  /** Напоминания о ДЗ: накануне в HOMEWORK_HOUR и за сутки, в день занятия в HOMEWORK_HOUR и за 2 часа. */
+  HOMEWORK_REMINDERS: z.enum(['on', 'off']).default('on'),
+  HOMEWORK_HOUR: hour.default(9),
   /** На сколько дней вперёд создавать занятия из расписания. */
   HORIZON_DAYS: z.coerce.number().int().min(7).max(90).default(28),
 

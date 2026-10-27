@@ -42,9 +42,10 @@ export async function materializeSchedule(now: DateTime): Promise<number> {
  * Какое занятие пользователь имеет в виду, если не уточнил.
  * - «было / не было / сгорело»: последнее уже начавшееся неотмеченное; иначе сегодняшнее; иначе ближайшее.
  * - «в силе» и перенос: сегодняшнее незакончившееся, иначе ближайшее будущее.
+ * - «ДЗ сделано»: ближайшее ещё не начавшееся (домашка во время или после урока — уже к следующему).
  */
 export function pickDefaultLesson(
-  intent: 'resolve' | 'confirm' | 'reschedule',
+  intent: 'resolve' | 'confirm' | 'reschedule' | 'homework',
   open: Lesson[],
   now: DateTime,
   zone: string,
@@ -55,6 +56,7 @@ export function pickDefaultLesson(
   if (intent === 'resolve') {
     return started.at(-1) ?? notEnded.find((l) => lessonStart(l, zone).hasSame(now, 'day')) ?? notEnded[0] ?? null;
   }
+  if (intent === 'homework') return sorted.find((l) => lessonStart(l, zone) > now) ?? null;
   return notEnded[0] ?? null;
 }
 
@@ -94,6 +96,14 @@ export async function setLessonStatus(lesson: Lesson, status: LessonStatus, note
   return { logId, summary };
 }
 
+export async function setHomeworkDone(lesson: Lesson): Promise<ActionResult> {
+  const zone = config().TIME_ZONE;
+  const after = await repo.updateRow<Lesson>('lessons', lesson.id, { homework_done_at: new Date().toISOString() });
+  const summary = `ДЗ к занятию ${fmtShort(lessonStart(lesson, zone))} сделано`;
+  const logId = await repo.logAction('homework_done', summary, [op('lessons', lesson.id, lesson, after)]);
+  return { logId, summary };
+}
+
 export async function rescheduleLesson(
   lesson: Lesson,
   newStart: DateTime,
@@ -109,6 +119,7 @@ export async function rescheduleLesson(
     status: 'planned',
     rescheduled_from: lesson.id,
     note: lesson.note,
+    homework_done_at: lesson.homework_done_at,
   });
   const summary = `перенос ${fmtShort(lessonStart(lesson, zone))} → ${fmtShort(newStart.setZone(zone))}`;
   const logId = await repo.logAction('reschedule', summary, [

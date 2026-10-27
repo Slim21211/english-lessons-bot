@@ -62,6 +62,15 @@ export function parseByRules(raw: string, ctx: RulesContext): Intent | null {
     return { type: 'payment', lessons, amount };
   }
 
+  // ДЗ: «дз сделано», «сделал домашку», «домашка готова» — без уточнения занятия
+  const hw = '(дз|домашк[аиу]|домашнее( задание)?|домашняя( работа)?)';
+  if (
+    new RegExp(`^${hw} (сделан[аоы]?|готов[аоы]?)$`).test(text) ||
+    new RegExp(`^(сделал[а]?|сделано|готово|выполнил[а]?) ${hw}$`).test(text)
+  ) {
+    return { type: 'homework_done', lesson_ref: null };
+  }
+
   // Подтверждение, что занятие состоялось — только короткие фразы без уточнения даты
   if (/^(было|прошло|провели|состоялось|занимались|отзанимался|отзанималась|сделано|done)$/.test(text)) {
     return { type: 'lesson_status', lesson_ref: null, status: 'done' };

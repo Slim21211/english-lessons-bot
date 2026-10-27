@@ -49,6 +49,8 @@ export async function runTick(now: DateTime = nowIn(config().TIME_ZONE)): Promis
       weeklyDigest: cfg.WEEKLY_DIGEST === 'on',
       weeklyDigestHour: cfg.WEEKLY_DIGEST_HOUR,
       autoDoneAfterHours: cfg.AUTO_DONE_AFTER_HOURS,
+      homework: cfg.HOMEWORK_REMINDERS === 'on',
+      homeworkHour: cfg.HOMEWORK_HOUR,
     },
   });
 
@@ -78,6 +80,15 @@ async function deliver(api: Api, chatId: number, notice: Notice, now: DateTime):
   const zone = cfg.TIME_ZONE;
 
   switch (notice.kind) {
+    case 'homework': {
+      // ДЗ могли отметить, а занятие — отменить или перенести между расчётом и отправкой
+      const lesson = await repo.getLesson(notice.lesson.id);
+      if (!lesson || !isOpen(lesson.status) || lesson.homework_done_at) return null;
+      const msg = await api.sendMessage(chatId, views.homeworkText(lesson, zone, now), {
+        reply_markup: views.homeworkKeyboard(lesson),
+      });
+      return msg.message_id;
+    }
     case 'morning': {
       // Занятие могли закрыть между расчётом и отправкой
       const lesson = await repo.getLesson(notice.lesson.id);

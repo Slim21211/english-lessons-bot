@@ -13,6 +13,7 @@ import { cb } from './views.js';
 export type ResolvedAction =
   | { type: 'status'; lessonId: string; status: Exclude<LessonStatus, 'planned' | 'rescheduled'> }
   | { type: 'reschedule'; lessonId: string; newStart: string }
+  | { type: 'homework'; lessonId: string }
   | { type: 'add_lesson'; start: string; durationMin: number }
   | { type: 'payment'; lessons: number; amount: number | null }
   | { type: 'set_balance'; remaining: number }
@@ -63,6 +64,11 @@ export function resolveIntent(
       if (!newStart.isValid) return 'Не понял новое время.';
       return { type: 'reschedule', lessonId: lesson.id, newStart: newStart.toISO() as string };
     }
+    case 'homework_done': {
+      const lesson = byRef(intent.lesson_ref) ?? svc.pickDefaultLesson('homework', ctx.open, ctx.now, ctx.zone);
+      if (!lesson) return 'Не нашёл занятия, к которому это ДЗ.';
+      return { type: 'homework', lessonId: lesson.id };
+    }
     case 'add_lesson': {
       const start = fromLocal(intent.datetime, ctx.zone);
       if (!start.isValid) return 'Не понял дату и время.';
@@ -100,6 +106,11 @@ export async function describeAction(action: ResolvedAction): Promise<string> {
       const lesson = await repo.getLesson(action.lessonId);
       const from = lesson ? fmtShort(lessonStart(lesson, zone)) : 'занятие';
       return `Перенести ${from} → ${fmtShort(DateTime.fromISO(action.newStart).setZone(zone))}`;
+    }
+    case 'homework': {
+      const lesson = await repo.getLesson(action.lessonId);
+      const when = lesson ? fmtShort(lessonStart(lesson, zone)) : 'занятию';
+      return `ДЗ к занятию ${when}: сделано`;
     }
     case 'add_lesson':
       return `Добавить занятие ${fmtShort(DateTime.fromISO(action.start).setZone(zone))}, ${action.durationMin} мин`;
@@ -167,6 +178,17 @@ export async function performAction(action: ResolvedAction): Promise<Reply> {
       }
       const res = await svc.rescheduleLesson(lesson, DateTime.fromISO(action.newStart).setZone(zone));
       return { text: `Готово: ${res.summary}.`, keyboard: afterActionKeyboard(res.logId, false) };
+    }
+    case 'homework': {
+      const lesson = await repo.getLesson(action.lessonId);
+      if (!lesson) return { text: 'Это занятие уже удалено.' };
+      const when = fmtShort(lessonStart(lesson, zone));
+      if (lesson.homework_done_at) return { text: `ДЗ к занятию ${when} уже отмечено.` };
+      const res = await svc.setHomeworkDone(lesson);
+      return {
+        text: `📚 Готово: ${res.summary}. Больше не напоминаю.`,
+        keyboard: afterActionKeyboard(res.logId, false),
+      };
     }
     case 'add_lesson': {
       const res = await svc.addLesson(DateTime.fromISO(action.start).setZone(zone), action.durationMin);

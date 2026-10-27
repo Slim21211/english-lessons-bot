@@ -18,5 +18,6 @@ export function lesson(local: string, status: LessonStatus = 'planned', duration
     rescheduled_from: null,
     note: null,
     resolved_at: null,
+    homework_done_at: null,
   };
 }
